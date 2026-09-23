@@ -1,0 +1,4 @@
+build/
+dist/
+potd/__pycache__/
+**/.DS_Store

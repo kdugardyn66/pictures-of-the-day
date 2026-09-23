@@ -1,0 +1,5 @@
+pyobjc-core>=10.0
+pyobjc-framework-Cocoa>=10.0
+pyobjc-framework-ServiceManagement>=10.0
+certifi
+py2app>=0.28.8
