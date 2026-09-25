@@ -23,8 +23,23 @@ if [ -d .venv ] && [ "$(.venv/bin/python -c 'import sys; print("%d.%d" % sys.ver
 fi
 [ -d .venv ] || "$PYTHON" -m venv .venv
 source .venv/bin/activate
-pip install --upgrade pip wheel setuptools >/dev/null
-pip install -r requirements.txt
+# Only go to the internet when something is missing; a failed download is not fatal
+# if everything potd needs is already installed in .venv.
+have_all() { python -c "import objc, AppKit, Photos, Quartz, CoreLocation, ServiceManagement, certifi, py2app" 2>/dev/null; }
+if have_all; then
+  echo "All Python packages already installed (no download needed)."
+else
+  pip install --upgrade pip wheel setuptools >/dev/null 2>&1 || echo "Note: could not update pip/wheel/setuptools (offline?) - continuing."
+  if ! pip install -r requirements.txt; then
+    if have_all; then
+      echo "Note: pip had network trouble, but all packages are present - continuing."
+    else
+      echo "ERROR: could not download the Python packages potd needs."
+      echo "       Check the internet connection (VPN/proxy/DNS) and run ./build.sh again."
+      exit 1
+    fi
+  fi
+fi
 
 # App icon: assets/icon.png -> assets/potd.icns
 if [ ! -f assets/potd.icns ]; then

@@ -14,7 +14,9 @@ __all__ = ["SITES", "API_KEY_FIELDS", "Settings", "State", "SUPPORT_DIR", "DEFAU
 # SHA-256 of the Unsplash key that v1.0 shipped as a default; it is cleared from old settings.
 _OLD_UNSPLASH_KEY_SHA256 = "eaffb0cea97dc13dd6aadb3767edfc1ab059ae6e08a7836ba2588a1ac2986f63"
 
-SITES = ["Bing", "NASA", "National Geographic", "Unsplash", "Wikimedia", "PicSum"]
+SITES = ["Bing", "NASA", "National Geographic", "Unsplash", "Wikimedia", "PicSum", "Photos"]
+# Your own photos are copied here (only you can read them), not to the shared folder.
+PRIVATE_SITE_DIRS = {"Photos": Path.home() / "Pictures" / "potd" / "Photos"}
 DEFAULT_ROOT = "/Users/Shared/Pictures/potd"
 API_KEY_FIELDS = {"NASA": "nasa_api_key", "Unsplash": "unsplash_access_key"}
 SUPPORT_DIR = Path(
@@ -63,10 +65,12 @@ class Settings:
     keep_days: int = 30               # days of pictures kept per site
     enabled: dict = field(default_factory=lambda: {s: True for s in SITES})
     storage_root: str = DEFAULT_ROOT
+    photos_dir: str = str(PRIVATE_SITE_DIRS["Photos"])   # copies of your own photos (private)
     nasa_api_key: str = "DEMO_KEY"
     unsplash_access_key: str = ""       # entered by the user in the Unsplash info window
     bing_market: str = "en-US"
     start_at_login: bool = False
+    photo_caption: bool = True        # date, place and camera bottom-left on Photos wallpapers
     settings_version: int = 2         # 1 = potd 1.0 (had a built-in Unsplash key)
 
     MIN_REFRESH_H, MAX_REFRESH_H = 1, 24   # class constants, not fields
@@ -103,9 +107,11 @@ class Settings:
             self.keep_days = 30
         self.clone_wallpapers = bool(self.clone_wallpapers)
         self.start_at_login = bool(self.start_at_login)
+        self.photo_caption = bool(self.photo_caption)
         en = self.enabled if isinstance(self.enabled, dict) else {}
         self.enabled = {s: bool(en.get(s, True)) for s in SITES}
         self.storage_root = str(self.storage_root or DEFAULT_ROOT)
+        self.photos_dir = str(self.photos_dir or PRIVATE_SITE_DIRS["Photos"])
         self.nasa_api_key = str(self.nasa_api_key or "").strip() or "DEMO_KEY"
         self.unsplash_access_key = str(self.unsplash_access_key or "").strip()
 

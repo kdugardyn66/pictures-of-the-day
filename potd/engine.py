@@ -35,7 +35,7 @@ class Engine:
         self.backend = backend
         self._settings_path = settings_path
         self._state_path = state_path
-        self.storage = Storage(settings.storage_root)
+        self.storage = Storage(settings.storage_root, {"Photos": settings.photos_dir})
         self.override: Path | None = None       # "Set wallpaper now" picture
         self.override_keys: set[str] = set()    # ...only on the screens/Spaces visible then
         self._applied: dict[str, str] = {}
@@ -51,7 +51,7 @@ class Engine:
     def save_settings(self):
         self.settings.save(self._settings_path)
         if Path(self.settings.storage_root) != self.storage.root:
-            self.storage = Storage(self.settings.storage_root)
+            self.storage = Storage(self.settings.storage_root, {"Photos": self.settings.photos_dir})
 
     # ------------------------------------------------------------ schedule
     def next_download_at(self, now: dt.datetime | None = None) -> dt.datetime:
@@ -85,7 +85,8 @@ class Engine:
         w, h = self.backend.target_size()
         s = self.settings
         return FetchContext(self.storage, dt.date.today().isoformat(), w, h,
-                            s.nasa_api_key, s.unsplash_access_key, s.bing_market)
+                            s.nasa_api_key, s.unsplash_access_key, s.bing_market,
+                            photo_caption=s.photo_caption)
 
     def run_downloads(self, sites: list[str] | None = None) -> dict:
         """Fetch today's picture from each site. Blocking: call from a worker thread."""

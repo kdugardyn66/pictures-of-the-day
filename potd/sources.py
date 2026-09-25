@@ -20,7 +20,7 @@ BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15
 MAX_BYTES = 80 * 1024 * 1024
 
 # Sources that return a new random picture on every call (the others have one picture per day).
-RANDOM_SITES = {"Unsplash", "PicSum"}
+RANDOM_SITES = {"Unsplash", "PicSum", "Photos"}
 # One picture per day: once today's is downloaded, no more network calls today.
 DAILY_SITES = {"Bing", "NASA", "National Geographic", "Wikimedia"}
 
@@ -51,6 +51,8 @@ SOURCE_INFO = {
                  "note": "Access Key of your app at https://unsplash.com/oauth/applications"},
     "Wikimedia": {"url": "https://commons.wikimedia.org/w/api.php (Template:Potd/<date>)",
                   "note": "No API key needed."},
+    "Photos": {"url": "Photos library on this Mac (Photos app, incl. iCloud Photos)",
+               "note": "Random landscape photo at every refresh. No API key needed."},
     "PicSum": {"url": "https://picsum.photos",
                "note": "No API key needed."},
 }
@@ -81,6 +83,7 @@ class FetchContext:
     unsplash_access_key: str = ""
     bing_market: str = "en-US"
     source_date: str | None = None   # set by a fetcher: the day the source's picture is for
+    photo_caption: bool = True       # Photos: write date / place / camera on the picture
 
 
 # ---------------------------------------------------------------- http helpers
@@ -329,6 +332,31 @@ def fetch_picsum(ctx: FetchContext) -> Picture:
     return _store(ctx, site, http_get(url), f"picsum-{stamp}", "Lorem Picsum", "picsum.photos", url)
 
 
+def _photos_module():
+    try:
+        from . import photos
+        return photos
+    except ImportError as e:     # not on macOS / pyobjc-framework-Photos missing
+        raise SourceError(f"Photos framework not available ({e})") from e
+
+
+def fetch_photos(ctx: FetchContext) -> Picture:
+    """A random landscape photo from the Photos library, rendered at screen size."""
+    site = "Photos"
+    ph = _photos_module()
+    recent = ctx.storage.recent_photos()
+    places = ctx.storage.place_cache()
+    try:
+        data, local_id, title, credit = ph.random_photo(ctx.width, ctx.height, set(recent),
+                                                        caption=ctx.photo_caption, place_cache=places)
+    except ph.PhotosError as e:
+        raise SourceError(str(e), transient=e.transient) from e
+    ctx.storage.add_recent_photo(local_id)
+    ctx.storage.save_place_cache(places)
+    stamp = dt.datetime.now().strftime("%H%M%S")
+    return _store(ctx, site, data, f"photo-{stamp}", title, credit, "photos:" + local_id)
+
+
 FETCHERS = {
     "Bing": fetch_bing,
     "NASA": fetch_nasa,
@@ -336,6 +364,7 @@ FETCHERS = {
     "Unsplash": fetch_unsplash,
     "Wikimedia": fetch_wikimedia,
     "PicSum": fetch_picsum,
+    "Photos": fetch_photos,
 }
 
 
@@ -423,4 +452,10 @@ def test_source(site: str, ctx: FetchContext) -> str:
         if not isinstance(j, list):
             raise SourceError("unexpected PicSum answer")
         return "PicSum answered"
+    if site == "Photos":
+        ph = _photos_module()
+        try:
+            return ph.check()
+        except ph.PhotosError as e:
+            raise SourceError(str(e), transient=e.transient) from e
     raise SourceError(f"unknown source {site}")

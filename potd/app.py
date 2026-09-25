@@ -24,7 +24,7 @@ from .sources import SOURCE_INFO
 log = logging.getLogger("potd")
 
 ON, OFF = AK.NSControlStateValueOn, AK.NSControlStateValueOff
-W, H = 860, 640
+W, H = 860, 684
 
 
 def _fourcc(s: str) -> int:
@@ -175,6 +175,7 @@ class AppDelegate(NSObject):
         win.setReleasedWhenClosed_(False)
         win.center()
         win.setFrameAutosaveName_("potdMainWindow")
+        win.setContentSize_((W, H))              # a saved frame from an older, smaller window
         win.setDelegate_(self)                   # -> windowWillClose_ (removes the Dock icon)
         self.window = win
         v = win.contentView()
@@ -200,7 +201,7 @@ class AppDelegate(NSObject):
             v.addSubview_(info)
             self.siteChecks.append(cb)
             self.siteButtons.append(b)
-        self.dlButton = _button("Download All Now", NSMakeRect(44, H - 125 - 6 * 44 - 4, 226, 32), self, "downloadNow:")
+        self.dlButton = _button("Download All Now", NSMakeRect(44, H - 125 - len(SITES) * 44 - 4, 226, 32), self, "downloadNow:")
         v.addSubview_(self.dlButton)
 
         # ---- preview (right)
@@ -266,7 +267,10 @@ class AppDelegate(NSObject):
         self.loginCheck = AK.NSButton.checkboxWithTitle_target_action_("Start potd at login", None, None)
         self.loginCheck.setFrame_(NSMakeRect(620, 62, 180, 22))
         c.addSubview_(self.loginCheck)
-        c.addSubview_(_label("Folder: " + self.settings.storage_root, NSMakeRect(620, 22, 190, 22), 11, secondary=True))
+        self.captionCheck = AK.NSButton.checkboxWithTitle_target_action_("Photo info on wallpaper", None, None)
+        self.captionCheck.setFrame_(NSMakeRect(620, 22, 190, 22))
+        self.captionCheck.setToolTip_("Photos: show date, place and camera in the bottom-left corner")
+        c.addSubview_(self.captionCheck)
 
         # ---- bottom row
         v.addSubview_(_label(f"potd {__version__}", NSMakeRect(20, 22, 200, 20), 11, secondary=True))
@@ -473,6 +477,7 @@ class AppDelegate(NSObject):
         self.cloneYes.setState_(ON if s.clone_wallpapers else OFF)
         self.cloneNo.setState_(OFF if s.clone_wallpapers else ON)
         self.loginCheck.setState_(ON if s.start_at_login else OFF)
+        self.captionCheck.setState_(ON if s.photo_caption else OFF)
         self.updateStatus()
 
     # ================================================================ actions: window/menu
@@ -676,6 +681,7 @@ class AppDelegate(NSObject):
         s.refresh_hours = self.refreshField.integerValue()
         s.keep_days = self.keepField.integerValue()
         s.clone_wallpapers = self.cloneYes.state() == ON
+        s.photo_caption = self.captionCheck.state() == ON
         for i, site in enumerate(SITES):
             s.enabled[site] = self.siteChecks[i].state() == ON
 

@@ -24,7 +24,7 @@ OPTIONS = {
     "argv_emulation": False,
     "iconfile": "assets/potd.icns",
     "packages": ["potd", "certifi"],
-    "includes": ["ServiceManagement"],
+    "includes": ["ServiceManagement", "Photos", "Quartz", "CoreLocation"],
     "plist": {
         "CFBundleName": "potd",
         "CFBundleDisplayName": "potd",
@@ -32,6 +32,9 @@ OPTIONS = {
         "CFBundleShortVersionString": __version__,
         "CFBundleVersion": __version__,
         "LSUIElement": True,                 # menu bar only, no Dock icon
+        # Shown by macOS when potd first asks for access to the Photos library.
+        "NSPhotoLibraryUsageDescription":
+            "potd uses random landscape photos from your Photos library as wallpaper.",
         "LSMinimumSystemVersion": "12.0",
         "NSHumanReadableCopyright": "potd — Pictures of the Day",
     },

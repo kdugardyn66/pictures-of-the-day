@@ -39,7 +39,7 @@ class FakeBackend:
 
 @pytest.fixture
 def env(tmp_path):
-    s = Settings(storage_root=str(tmp_path / "potd"))
+    s = Settings(storage_root=str(tmp_path / "potd"), photos_dir=str(tmp_path / "private" / "Photos"))
     st = State()
     be = FakeBackend(["A|1", "B|1"])
     e = Engine(s, st, be, settings_path=tmp_path / "s.json", state_path=tmp_path / "st.json")
@@ -112,7 +112,7 @@ def test_clone_yes_loops_day_pool(env, monkeypatch):
     add(e, "Bing", "2026-09-22", "old")
     fake_downloads(e, monkeypatch, "2026-09-23", {"Bing": "b", "NASA": "n", "Wikimedia": "w"})
     r = e.finish_downloads(e.run_downloads())
-    assert len(r["pictures"]) == 3 and len(r["errors"]) == 3
+    assert len(r["pictures"]) == 3 and len(r["errors"]) == 4
     assert e.state.last_download_date == "2026-09-23"
     assert be.set == {"A|1": "2026-09-23_b.png", "B|1": "2026-09-23_b.png"}   # same everywhere
     seen = []
@@ -172,8 +172,8 @@ def test_offline_sources_are_retried_not_disabled(env, monkeypatch):
     e, be, _ = env
     fake_downloads(e, monkeypatch, "2026-09-23", {"Bing": "b"})
     r = e.finish_downloads(e.run_downloads())
-    assert r["disabled"] == [] and len(e.settings.enabled_sites()) == 6
-    assert e.retry_due() == ["NASA", "National Geographic", "Unsplash", "Wikimedia", "PicSum"]
+    assert r["disabled"] == [] and len(e.settings.enabled_sites()) == 7
+    assert e.retry_due() == ["NASA", "National Geographic", "Unsplash", "Wikimedia", "PicSum", "Photos"]
     # next refresh: NASA works again, the others are still offline
     fake_downloads(e, monkeypatch, "2026-09-23", {"NASA": "n"})
     e.finish_downloads(e.run_downloads(e.retry_due()), daily=False)
@@ -222,21 +222,22 @@ def fake_tests(monkeypatch, results):
 def test_failed_sources_are_disabled(env, monkeypatch):
     e, _, tmp = env
     fake_tests(monkeypatch, {"Bing": True, "NASA": "HTTP 403", "National Geographic": True,
-                             "Unsplash": "no key", "Wikimedia": True, "PicSum": "offline"})
+                             "Unsplash": "no key", "Wikimedia": True, "PicSum": "offline",
+                             "Photos": True})
     res = e.test_sources()
     disabled, offline = e.apply_test_results(res)
     # PicSum was only unreachable (temporary): kept enabled
     assert not offline and sorted(disabled) == ["NASA", "Unsplash"]
-    assert e.settings.enabled_sites() == ["Bing", "National Geographic", "Wikimedia", "PicSum"]
+    assert e.settings.enabled_sites() == ["Bing", "National Geographic", "Wikimedia", "PicSum", "Photos"]
     assert Settings.load(tmp / "s.json").enabled["NASA"] is False      # persisted
 
 
 def test_offline_disables_nothing(env, monkeypatch):
     e, _, _ = env
-    fake_tests(monkeypatch, {s: "offline" for s in ["Bing", "NASA", "National Geographic",
-                                                     "Unsplash", "Wikimedia", "PicSum"]})
+    from potd.config import SITES
+    fake_tests(monkeypatch, {s: "offline" for s in SITES})
     disabled, offline = e.apply_test_results(e.test_sources())
-    assert offline and disabled == [] and len(e.settings.enabled_sites()) == 6
+    assert offline and disabled == [] and len(e.settings.enabled_sites()) == 7
 
 
 def test_test_uses_unsaved_key_and_save_enables(env, monkeypatch):
@@ -350,3 +351,90 @@ def test_refresh_rate_in_hours():
     assert old.refresh_hours == 2
     old = Settings(refresh_rate=600); old.normalize()       # 10 min -> 1 h
     assert old.refresh_hours == 1
+
+
+def test_photos_source_random_private_and_no_repeats(env, monkeypatch):
+    """Photos: a new random photo each refresh, stored privately, recent ones avoided."""
+    import os
+    import stat
+    import sys
+    import types
+    e, be, tmp = env
+    fake = types.ModuleType("potd.photos")
+
+    class PhotosError(Exception):
+        def __init__(self, msg, transient=False):
+            super().__init__(msg)
+            self.transient = transient
+    library = ["A", "B", "C"]
+    seen_avoid = []
+
+    captions = []
+
+    def random_photo(w, h, avoid, caption=True, place_cache=None):
+        seen_avoid.append(set(avoid))
+        captions.append(caption)
+        place_cache["50.850,4.350"] = "Brussels, Belgium"
+        pick = next(x for x in library if x not in avoid)
+        return png(40, 20), pick, f"Photo {pick}", "Apple iPhone 15 Pro"
+    fake.PhotosError, fake.random_photo = PhotosError, random_photo
+    fake.check = lambda: "3 photos in the library"
+    monkeypatch.setitem(sys.modules, "potd.photos", fake)
+    import potd
+    monkeypatch.setattr(potd, "photos", fake, raising=False)
+
+    ctx = e._ctx()
+    p1 = sources.fetch("Photos", ctx)
+    p2 = sources.fetch("Photos", ctx)
+    assert p1.path != p2.path and p1.title == "Photo A" and p2.title == "Photo B"
+    assert seen_avoid[1] == {"A"}                                  # no immediate repeat
+    assert p1.path.parent == tmp / "private" / "Photos"            # not in /Users/Shared
+    assert stat.S_IMODE(os.stat(p1.path).st_mode) == 0o600
+    assert e.storage.resolve(p1.rel).path == p1.path               # rotation can find it
+    assert sources.test_source("Photos", ctx) == "3 photos in the library"
+    assert captions == [True, True]                                # setting passed through
+    assert e.storage.place_cache() == {"50.850,4.350": "Brussels, Belgium"}   # remembered
+    assert e.caption(p1.path) == "Photo A — Apple iPhone 15 Pro"
+
+    def denied(w, h, avoid, **kw):
+        raise PhotosError("no access to Photos")
+    fake.random_photo = denied
+    r = e.finish_downloads(e.run_downloads(["Photos"]), daily=False)
+    assert r["disabled"] == ["Photos"]                             # permission refused -> unticked
+
+
+def test_photo_caption_text_and_layout():
+    from potd.photo_caption import (caption_lines, fill_rect, format_camera, format_coordinates,
+                                    format_place, output_size, text_metrics)
+    assert format_camera("Apple", "iPhone 15 Pro") == "Apple iPhone 15 Pro"
+    assert format_camera("Canon", "Canon EOS R6") == "Canon EOS R6"
+    assert format_camera("NIKON CORPORATION", "NIKON Z 6") == "NIKON Z 6"
+    assert format_camera("SONY", "ILCE-7M3") == "Sony ILCE-7M3"
+    assert format_camera(None, None) == ""
+    assert format_place("Brussels", "Brussels", "Belgium") == "Brussels, Belgium"
+    assert format_place("Ghent", "East Flanders", "Belgium") == "Ghent, Belgium"
+    assert format_coordinates(50.85, -4.35) == "50.8500° N, 4.3500° W"
+    assert caption_lines("14 July 2023 at 18:22", "", "Apple iPhone 15 Pro") == \
+        ["14 July 2023 at 18:22", "Apple iPhone 15 Pro"]          # no location -> line left out
+    # output has the screen's shape, so macOS doesn't crop the corner text away
+    assert output_size(4032, 3024, 2880, 1800) == (2880, 1800)
+    w, h = output_size(1600, 1200, 2880, 1800)                    # small photo: no upscaling
+    assert (w, h) == (1600, 1000) and abs(w / h - 2880 / 1800) < 0.01
+    x, y, dw, dh = fill_rect(4032, 3024, 2880, 1800)              # covers the whole output
+    assert x <= 0 and y <= 0 and dw >= 2880 and dh >= 1800
+    m = text_metrics(1800)
+    assert 20 <= m["font"] <= 40 and m["margin_x"] > 0 and m["margin_y"] > 0
+
+
+def test_liquid_glass_style_adapts_to_the_photo():
+    from potd.photo_caption import glass_geometry, glass_style, relative_luminance, text_metrics
+    assert relative_luminance(1, 1, 1) == pytest.approx(1.0)
+    assert relative_luminance(0, 0, 0) == 0
+    bright, dark = glass_style(relative_luminance(0.9, 0.92, 0.95)), glass_style(0.03)
+    assert bright["text"][0] < 0.5 and not bright["text_shadow"]    # dark text on a bright photo
+    assert dark["text"][0] > 0.9 and dark["text_shadow"]            # white text on a dark photo
+    m = text_metrics(1800)
+    g = glass_geometry(400, 90, m)
+    assert g["w"] > 400 and g["h"] > 90                             # padding around the text
+    assert 0 < g["radius"] <= g["h"] / 2                            # rounded, never more than a capsule
+    assert g["x"] == m["margin_x"] and g["y"] == m["margin_y"]      # bottom-left corner

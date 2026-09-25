@@ -8,7 +8,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import SITES, _read_json, write_json_atomic
+from .config import PRIVATE_SITE_DIRS, SITES, _read_json, write_json_atomic
 
 FILE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_.+\.(jpe?g|png)$", re.I)
 META_NAME = ".potd-meta.json"
@@ -26,15 +26,19 @@ class StoredPicture:
 
 
 class Storage:
-    def __init__(self, root):
+    def __init__(self, root, site_dirs: dict | None = None):
         self.root = Path(root)
+        # Sites stored outside the shared root (your Photos library copies).
+        self.site_dirs = {k: Path(v) for k, v in (PRIVATE_SITE_DIRS if site_dirs is None else site_dirs).items()}
         self._lock = threading.RLock()
 
     # ---------- files ----------
     def site_dir(self, site: str, create: bool = False) -> Path:
-        d = self.root / site
+        d = self.site_dirs.get(site) or self.root / site
         if create:
             d.mkdir(parents=True, exist_ok=True)
+            if site in self.site_dirs:
+                os.chmod(d, 0o700)
         return d
 
     def pictures(self, site: str) -> list[StoredPicture]:
@@ -59,7 +63,7 @@ class Storage:
     def resolve(self, rel: str) -> StoredPicture | None:
         site, _, name = rel.partition("/")
         m = FILE_RE.match(name)
-        p = self.root / site / name
+        p = self.site_dir(site) / name
         if site in SITES and m and p.is_file():
             return StoredPicture(site, p, m.group(1))
         return None
@@ -76,7 +80,7 @@ class Storage:
             fd, tmp = tempfile.mkstemp(dir=d, prefix=".dl-")
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
-            os.chmod(tmp, 0o644)
+            os.chmod(tmp, 0o600 if site in self.site_dirs else 0o644)
             os.replace(tmp, path)
         return path
 
@@ -144,6 +148,29 @@ class Storage:
             daily = meta.get("_daily") or {}
             daily[site] = {"date": date, "rel": rel, "done": done}
             meta["_daily"] = daily
+            self._save_meta(meta)
+
+    def recent_photos(self) -> list[str]:
+        """Photos library items used lately (so the same photo doesn't come back soon)."""
+        with self._lock:
+            return list(self._meta().get("_photos_recent") or [])
+
+    def add_recent_photo(self, local_id: str, keep: int = 300) -> None:
+        with self._lock:
+            meta = self._meta()
+            lst = [x for x in (meta.get("_photos_recent") or []) if x != local_id] + [local_id]
+            meta["_photos_recent"] = lst[-keep:]
+            self._save_meta(meta)
+
+    def place_cache(self) -> dict:
+        """Place names already looked up, by rounded coordinates (fewer geocoding calls)."""
+        with self._lock:
+            return dict(self._meta().get("_places") or {})
+
+    def save_place_cache(self, places: dict, keep: int = 2000) -> None:
+        with self._lock:
+            meta = self._meta()
+            meta["_places"] = dict(list(places.items())[-keep:])
             self._save_meta(meta)
 
     def is_rejected(self, url: str) -> bool:

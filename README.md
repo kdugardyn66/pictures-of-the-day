@@ -1,7 +1,7 @@
 # potd — Pictures of the Day
 
 A macOS menu bar app that downloads the picture of the day from **Bing, NASA, National Geographic,
-Unsplash, Wikimedia and PicSum**, stores it in `/Users/Shared/Pictures/potd/<Site>/`, and rotates
+Unsplash, Wikimedia and PicSum**, adds random photos from your own **Photos** library, stores it in `/Users/Shared/Pictures/potd/<Site>/`, and rotates
 your wallpapers across every monitor and every desktop (Space).
 
 ## Why Python
@@ -58,8 +58,23 @@ On first launch macOS may say the app is from an unidentified developer. Right-c
   Once today's is downloaded, potd makes no more calls to them until tomorrow. (If Bing or NASA,
   which publish on US time, still show yesterday's picture, they're checked again at the next
   refresh.)
-* **Every refresh** (*Refresh rate*, in hours): Unsplash and PicSum fetch a new random picture, the daily
-  sources make no call once they have today's picture, then the wallpaper moves to the next one.
+* **Every refresh** (*Refresh rate*, in hours): Unsplash, PicSum and Photos each add a new random
+  picture, the daily sources make no call once they have today's picture, then the wallpaper
+  moves to the next one.
+* **Photos** (your Photos library): the first time, macOS asks *"potd would like to access your
+  Photos"*. Choose **Allow Full Access** (with *Limited Access* potd only sees the photos you pick).
+  Each refresh takes a random **landscape** photo (portrait photos and screenshots are skipped;
+  recently used photos aren't picked again soon). iCloud Photos works too: the original is
+  downloaded when needed. Changed your mind? System Settings → Privacy & Security → Photos → potd.
+  **Photo info on wallpaper** (Settings, on by default): the bottom-left corner shows when the
+  photo was taken, where (place name looked up from the photo's GPS position; coordinates if
+  offline) and with which camera, on a panel in the macOS **Liquid Glass** style: the photo behind
+  it is frosted, the top edge catches the light, and the text turns dark on bright photos and
+  white on dark ones. (A picture file can't hold the live system material, so potd draws its
+  look into the wallpaper.) Lines without information are left out. The photo is cropped to
+  your screen's shape so the text isn't cut off. Changing the setting applies to new photos.
+  The copies are stored privately in `~/Pictures/potd/Photos` (only your account can read them),
+  not in the shared folder, and are cleaned up by *Keep wallpapers* like the other sources.
 * **When a source fails**:
   * *temporarily* (no connection, timeout, rate limit, server error): it stays enabled and is
     tried again at every refresh until it works;
@@ -74,6 +89,7 @@ On first launch macOS may say the app is from an unidentified developer. Right-c
 | Clone wallpapers = No | Every monitor/desktop shows a different picture: today's first, then day-1, day-2, … Once all are used it starts again from the first picture of today. Every refresh moves each screen on to the next picture. |
 | Keep wallpapers (days) | Per site, pictures from the newest *N* days are kept and older ones are deleted. |
 | Start potd at login | Registers potd as a login item (only in the built app, macOS 13+). |
+| Photo info on wallpaper | Photos source: date, place and camera in the bottom-left corner. |
 
 ## How desktops (Spaces) are handled
 
@@ -87,6 +103,7 @@ window-server call. If a future macOS removes that call, potd falls back to one 
 | Path | What |
 |---|---|
 | `/Users/Shared/Pictures/potd/<Site>/YYYY-MM-DD_name.jpg` | pictures (date = the day it was downloaded) |
+| `~/Pictures/potd/Photos/` | copies of your own photos (private to your account) |
 | `/Users/Shared/Pictures/potd/.potd-meta.json` | titles and credits shown in the preview |
 | `~/Library/Application Support/potd/settings.json` | settings, including API keys (`nasa_api_key`, `unsplash_access_key`, `bing_market`) |
 | `~/Library/Application Support/potd/state.json` | rotation position, last download |

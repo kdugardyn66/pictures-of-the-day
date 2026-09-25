@@ -3,3 +3,6 @@ pyobjc-framework-Cocoa>=10.0
 pyobjc-framework-ServiceManagement>=10.0
 certifi
 py2app>=0.28.8
+pyobjc-framework-Photos>=10.0
+pyobjc-framework-Quartz>=10.0
+pyobjc-framework-CoreLocation>=10.0
