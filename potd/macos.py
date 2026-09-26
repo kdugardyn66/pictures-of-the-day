@@ -108,17 +108,30 @@ class MacBackend:
         log.debug("slots: %s", [k for k, _ in out])
         return out
 
-    def set_wallpaper(self, screen, path: Path) -> bool:
+    def set_wallpaper(self, screen, path: Path, fit: bool = False) -> bool:
+        """fit=True: the whole picture stays visible ("Fit to Screen"); otherwise it fills
+        the screen and macOS may crop the edges ("Fill Screen")."""
         url = NSURL.fileURLWithPath_(str(path))
         opts = {
             AK.NSWorkspaceDesktopImageScalingKey: AK.NSImageScaleProportionallyUpOrDown,
-            AK.NSWorkspaceDesktopImageAllowClippingKey: True,
+            AK.NSWorkspaceDesktopImageAllowClippingKey: not fit,
         }
+        if fit:
+            opts[AK.NSWorkspaceDesktopImageFillColorKey] = AK.NSColor.blackColor()
         ok, err = AK.NSWorkspace.sharedWorkspace().setDesktopImageURL_forScreen_options_error_(
             url, screen, opts, None)
         if not ok:
             log.warning("setting wallpaper failed: %s", err)
         return bool(ok)
+
+    @staticmethod
+    def screen_size(screen) -> tuple[int, int]:
+        f, k = screen.frame().size, screen.backingScaleFactor()
+        return int(f.width * k), int(f.height * k)
+
+    def screen_sizes(self) -> list[tuple[int, int]]:
+        """Pixel size of every connected monitor (Retina screens count their real pixels)."""
+        return [self.screen_size(s) for s in (AK.NSScreen.screens() or [])]
 
     def target_size(self):
         w, h = 2560, 1440

@@ -71,8 +71,14 @@ On first launch macOS may say the app is from an unidentified developer. Right-c
   offline) and with which camera, on a panel in the macOS **Liquid Glass** style: the photo behind
   it is frosted, the top edge catches the light, and the text turns dark on bright photos and
   white on dark ones. (A picture file can't hold the live system material, so potd draws its
-  look into the wallpaper.) Lines without information are left out. The photo is cropped to
-  your screen's shape so the text isn't cut off. Changing the setting applies to new photos.
+  look into the wallpaper.) Lines without information are left out. Changing the setting
+  applies to new photos.
+  **Always the whole photo**: Photos wallpapers are never cropped. The photo is fitted on the
+  screen and any space left over is filled with a blurred, darker copy of the same photo.
+  **One version per monitor**: each photo is prepared separately for every connected monitor's
+  shape (e.g. a MacBook screen, a 16:9 27" and a 21:9 34"), each with its own blurred background
+  and photo-info panel, so no screen shows black bars. The extra versions are kept in a hidden
+  `.screens` folder next to the photo and deleted together with it.
   The copies are stored privately in `~/Pictures/potd/Photos` (only your account can read them),
   not in the shared folder, and are cleaned up by *Keep wallpapers* like the other sources.
 * **When a source fails**:

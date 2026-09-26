@@ -164,7 +164,11 @@ class AppDelegate(NSObject):
         self.statusItem.setMenu_(menu)
 
     def menuWillOpen_(self, menu):
-        self.menuStatus.setTitle_(self.statusText(short=True))
+        text = self.statusText(short=True)
+        off = [x for x in self.engine.state.disabled_reasons if not self.settings.enabled.get(x)]
+        if off:
+            text += " · unticked: " + ", ".join(off)
+        self.menuStatus.setTitle_(text)
 
     # ================================================================ window
     def buildWindow(self):
@@ -463,6 +467,17 @@ class AppDelegate(NSObject):
         self.infoPanel.orderOut_(None)
         self.setStatus(f"{site} saved and enabled.")
 
+    @objc.python_method
+    def showDisabledReasons(self):
+        """Tell why potd unticked a source (it may have happened while the window was closed)."""
+        reasons = {s: r for s, r in self.engine.state.disabled_reasons.items()
+                   if not self.settings.enabled.get(s)}
+        for i, site in enumerate(SITES):
+            why = reasons.get(site)
+            self.siteChecks[i].setToolTip_(f"Unticked by potd: {why}" if why else None)
+        if reasons:
+            self.setStatus("Unticked by potd — " + "; ".join(f"{s}: {r}" for s, r in reasons.items()))
+
     def loadSettingsIntoControls(self):
         s = self.settings
         for i, site in enumerate(SITES):
@@ -486,6 +501,7 @@ class AppDelegate(NSObject):
         AK.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         self.window.makeKeyAndOrderFront_(None)
         self.updateStatus()
+        self.showDisabledReasons()
         self.showFirstPreview()
         # Opening potd (Applications, Spotlight, `open -a potd`, or "Open potd…" in the
         # menu bar) downloads the pictures of all enabled sources. Daily sources that
@@ -634,6 +650,8 @@ class AppDelegate(NSObject):
         r = self.engine.finish_downloads(results, daily=daily)
         for site in r["disabled"]:
             self.siteChecks[SITES.index(site)].setState_(OFF)
+        if r["disabled"]:
+            self.showDisabledReasons()
         parts = [f"{len(r['pictures'])} picture(s) ready ({len(r['new'])} new)"]
         if r["retry"]:
             parts.append("retry at next refresh: " + ", ".join(
@@ -703,6 +721,10 @@ class AppDelegate(NSObject):
         if s.keep_days < old_keep:
             self.runInBackground(self.engine.prune, lambda r, e: None)
         newly = [x for x in SITES if s.enabled[x] and not old_enabled.get(x)]
+        for x in newly:
+            self.engine.state.disabled_reasons.pop(x, None)
+        if newly:
+            self.engine.save_state()
         if newly:
             self.startDownloads(sites=newly)         # get today's picture of re-enabled sources
         self.setStatus("Settings saved.")

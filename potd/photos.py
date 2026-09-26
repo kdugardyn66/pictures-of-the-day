@@ -14,8 +14,8 @@ import Photos as PH
 import Quartz as Q
 from Foundation import NSMakeRect, NSDateFormatter, NSDateFormatterLongStyle, NSDateFormatterShortStyle
 
-from .photo_caption import (caption_lines, fill_rect, format_camera, format_coordinates,
-                            format_place, glass_geometry, glass_style, output_size,
+from .photo_caption import (caption_lines, coordinate_values, fill_rect, fit_rect, format_camera, format_coordinates,
+                            format_place, glass_geometry, glass_style, screen_shapes,
                             relative_luminance, text_metrics)
 
 _READ_WRITE = 2          # PHAccessLevelReadWrite (reading needs this level; potd never writes)
@@ -47,10 +47,19 @@ def authorize(timeout: float = 120) -> None:
             box["status"] = int(st)
             done.set()
         lib = PH.PHPhotoLibrary
-        if hasattr(lib, "requestAuthorizationForAccessLevel_handler_"):
-            lib.requestAuthorizationForAccessLevel_handler_(_READ_WRITE, handler)
+
+        def ask():
+            # potd is a menu-bar app: bring it to the front, or macOS may not show the prompt
+            AK.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            if hasattr(lib, "requestAuthorizationForAccessLevel_handler_"):
+                lib.requestAuthorizationForAccessLevel_handler_(_READ_WRITE, handler)
+            else:
+                lib.requestAuthorization_(handler)
+        if threading.current_thread() is threading.main_thread():
+            ask()
         else:
-            lib.requestAuthorization_(handler)
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(ask)             # the prompt must be requested on the main thread
         if not done.wait(timeout):
             raise PhotosError("waiting for permission to access Photos", transient=True)
         status = box.get("status", _status())
@@ -141,8 +150,7 @@ def _place(asset, cache: dict | None) -> str:
     loc = asset.location()
     if loc is None:
         return ""
-    c = loc.coordinate()
-    lat, lon = float(c.latitude), float(c.longitude)
+    lat, lon = coordinate_values(loc.coordinate())
     key = f"{lat:.3f},{lon:.3f}"
     if cache is not None and cache.get(key):
         return cache[key]
@@ -168,8 +176,30 @@ def _place(asset, cache: dict | None) -> str:
     return name or format_coordinates(lat, lon)   # offline: show coordinates
 
 
+def _frame(thumb, W: int, H: int):
+    """The finished picture (without text) as a Core Image image: the whole photo fitted
+    in the middle, and a blurred, darker copy of it filling the rest of the screen."""
+    tw, th = Q.CGImageGetWidth(thumb), Q.CGImageGetHeight(thumb)
+    base = Q.CIImage.imageWithCGImage_(thumb)
+    fx, fy, fw, fh = fill_rect(tw, th, W, H)
+    bg = base.imageByApplyingTransform_(Q.CGAffineTransformMake(fw / tw, 0, 0, fh / th, fx, fy))
+    blur = Q.CIFilter.filterWithName_("CIGaussianBlur")
+    blur.setValue_forKey_(bg.imageByClampingToExtent(), "inputImage")
+    blur.setValue_forKey_(max(20.0, H / 28), "inputRadius")
+    tone = Q.CIFilter.filterWithName_("CIColorControls")
+    tone.setValue_forKey_(blur.valueForKey_("outputImage"), "inputImage")
+    tone.setValue_forKey_(-0.12, "inputBrightness")          # a bit darker, so the photo stands out
+    tone.setValue_forKey_(1.1, "inputSaturation")
+    tone.setValue_forKey_(1.0, "inputContrast")
+    x, y, w, h = fit_rect(tw, th, W, H)
+    fg = base.imageByApplyingTransform_(Q.CGAffineTransformMake(w / tw, 0, 0, h / th, x, y))
+    return fg.imageByCompositingOverImage_(tone.valueForKey_("outputImage")).imageByCroppingToRect_(
+        Q.CGRectMake(0, 0, W, H))
+
+
 def _render(src, props, screen_w: int, screen_h: int, lines: list[str]) -> bytes:
-    """Screen-shaped JPEG: photo centre-cropped to the screen, text bottom-left."""
+    """Screen-shaped JPEG: the whole photo fitted on the screen (nothing cut off), a blurred
+    copy of it behind, and the photo info bottom-left."""
     iw = int(props.get(Q.kCGImagePropertyPixelWidth) or 0)
     ih = int(props.get(Q.kCGImagePropertyPixelHeight) or 0)
     orient = int(props.get(Q.kCGImagePropertyOrientation) or 1)
@@ -177,8 +207,8 @@ def _render(src, props, screen_w: int, screen_h: int, lines: list[str]) -> bytes
         iw, ih = ih, iw
     if not iw or not ih:
         raise PhotosError("photo has no size information", transient=True)
-    W, H = output_size(iw, ih, screen_w, screen_h)
-    scale = max(W / iw, H / ih)
+    W, H = int(screen_w), int(screen_h)
+    scale = min(W / iw, H / ih, 1.0)               # fit; never decode larger than the original
     thumb = Q.CGImageSourceCreateThumbnailAtIndex(src, 0, {
         Q.kCGImageSourceCreateThumbnailFromImageAlways: True,
         Q.kCGImageSourceCreateThumbnailWithTransform: True,        # apply the orientation
@@ -186,6 +216,10 @@ def _render(src, props, screen_w: int, screen_h: int, lines: list[str]) -> bytes
     })
     if thumb is None:
         raise PhotosError("could not decode the photo", transient=True)
+    frame = _frame(thumb, W, H)
+    frame_cg = Q.CIContext.contextWithOptions_(None).createCGImage_fromRect_(frame, Q.CGRectMake(0, 0, W, H))
+    if frame_cg is None:
+        raise PhotosError("could not render the photo", transient=True)
 
     rep = AK.NSBitmapImageRep.alloc().initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(
         None, W, H, 8, 4, True, False, AK.NSDeviceRGBColorSpace, 0, 0)
@@ -195,11 +229,10 @@ def _render(src, props, screen_w: int, screen_h: int, lines: list[str]) -> bytes
         AK.NSGraphicsContext.setCurrentContext_(ctx)
         cg = ctx.CGContext()
         Q.CGContextSetInterpolationQuality(cg, Q.kCGInterpolationHigh)
-        x, y, w, h = fill_rect(Q.CGImageGetWidth(thumb), Q.CGImageGetHeight(thumb), W, H)
-        Q.CGContextDrawImage(cg, Q.CGRectMake(x, y, w, h), thumb)
+        Q.CGContextDrawImage(cg, Q.CGRectMake(0, 0, W, H), frame_cg)
         if lines:
             ctx.flushGraphics()                  # so the backdrop brightness can be read
-            _draw_caption(lines, rep, cg, thumb, (x, y, w, h), H)
+            _draw_caption(lines, rep, cg, frame, H)
         ctx.flushGraphics()
     finally:
         AK.NSGraphicsContext.restoreGraphicsState()
@@ -222,14 +255,10 @@ def _backdrop_luminance(rep, g: dict, H: int) -> float:
     return total / n if n else 0.3
 
 
-def _frosted(thumb, place: tuple, g: dict, style: dict):
-    """The photo under the panel, blurred and slightly brighter/more saturated."""
-    x, y, w, h = place
-    ci = Q.CIImage.imageWithCGImage_(thumb)
-    sx, sy = w / Q.CGImageGetWidth(thumb), h / Q.CGImageGetHeight(thumb)
-    ci = ci.imageByApplyingTransform_(Q.CGAffineTransformMake(sx, 0, 0, sy, x, y))
+def _frosted(frame, g: dict, style: dict):
+    """What's behind the panel, blurred and slightly brighter/more saturated."""
     blur = Q.CIFilter.filterWithName_("CIGaussianBlur")
-    blur.setValue_forKey_(ci.imageByClampingToExtent(), "inputImage")
+    blur.setValue_forKey_(frame.imageByClampingToExtent(), "inputImage")
     blur.setValue_forKey_(g["blur"], "inputRadius")
     color = Q.CIFilter.filterWithName_("CIColorControls")
     color.setValue_forKey_(blur.valueForKey_("outputImage"), "inputImage")
@@ -241,7 +270,7 @@ def _frosted(thumb, place: tuple, g: dict, style: dict):
         out, Q.CGRectMake(g["x"], g["y"], g["w"], g["h"]))
 
 
-def _draw_caption(lines: list[str], rep, cg, thumb, place: tuple, H: int) -> None:
+def _draw_caption(lines: list[str], rep, cg, frame, H: int) -> None:
     """Liquid Glass style panel with the photo info, bottom-left."""
     m = text_metrics(H)
     fonts = [AK.NSFont.systemFontOfSize_weight_(m["font"] * (1.0 if i == 0 else 0.85),
@@ -271,7 +300,7 @@ def _draw_caption(lines: list[str], rep, cg, thumb, place: tuple, H: int) -> Non
     # 2. frosted glass: blurred photo + light tint + a faint sheen on the upper half
     AK.NSGraphicsContext.saveGraphicsState()
     panel.addClip()
-    frosted = _frosted(thumb, place, g, style)
+    frosted = _frosted(frame, g, style)
     if frosted is not None:
         Q.CGContextDrawImage(cg, Q.CGRectMake(g["x"], g["y"], g["w"], g["h"]), frosted)
     AK.NSColor.colorWithCalibratedWhite_alpha_(*style["tint"]).setFill()
@@ -315,7 +344,7 @@ def _draw_caption(lines: list[str], rep, cg, thumb, place: tuple, H: int) -> Non
 
 
 def random_photo(width: int, height: int, avoid: set[str] | None = None, tries: int = 200,
-                 caption: bool = True, place_cache: dict | None = None):
+                 caption: bool = True, place_cache: dict | None = None, sizes=None):
     """Pick a random landscape photo, render it screen-sized as JPEG, optionally with
     date / place / camera in the bottom-left corner.
     Returns (jpeg_bytes, local_identifier, title, credit)."""
@@ -337,6 +366,9 @@ def random_photo(width: int, height: int, avoid: set[str] | None = None, tries: 
     src, props = _original(asset)
     date_text, place, camera = _date_text(asset), _place(asset, place_cache), _camera(props)
     lines = caption_lines(date_text, place, camera) if caption else []
-    data = _render(src, props, width, height, lines)
+    shapes = screen_shapes(sizes or [(width, height)])
+    main = shapes[0]                               # largest screen: the file in the rotation
+    data = _render(src, props, main[0], main[1], lines)
+    extra = {s: _render(src, props, s[0], s[1], lines) for s in shapes[1:]}   # other monitors
     title = " · ".join(x for x in (date_text, place) if x) or "Photo"
-    return data, str(asset.localIdentifier()), title, camera or "Photos library"
+    return data, str(asset.localIdentifier()), title, camera or "Photos library", extra

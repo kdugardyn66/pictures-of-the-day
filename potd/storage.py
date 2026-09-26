@@ -84,6 +84,47 @@ class Storage:
             os.replace(tmp, path)
         return path
 
+    # ---------- per-screen versions (Photos) ----------
+    @staticmethod
+    def _variant_dir(path: Path) -> Path:
+        return Path(path).parent / ".screens"
+
+    def save_variant(self, path: Path, size: tuple, data: bytes) -> Path:
+        """Store a version of `path` rendered for one screen size (hidden from rotation)."""
+        d = self._variant_dir(path)
+        d.mkdir(parents=True, exist_ok=True)
+        out = d / f"{Path(path).stem}@{int(size[0])}x{int(size[1])}.jpg"
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".dl-")
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.chmod(tmp, 0o600 if Path(path).parent in self.site_dirs.values() else 0o644)
+        os.replace(tmp, out)
+        return out
+
+    def variants(self, path: Path) -> dict:
+        """{(w, h): file} of the per-screen versions of a picture."""
+        path, out = Path(path), {}
+        pre = path.stem + "@"
+        try:
+            entries = list(os.scandir(self._variant_dir(path)))
+        except OSError:
+            return out
+        for e in entries:
+            if e.name.startswith(pre) and e.name.endswith(".jpg"):
+                try:
+                    w, h = e.name[len(pre):-4].split("x")
+                    out[(int(w), int(h))] = Path(e.path)
+                except ValueError:
+                    pass
+        return out
+
+    def _remove_variants(self, path: Path) -> None:
+        for f in self.variants(path).values():
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
     def prune(self, site: str, keep_days: int) -> list[Path]:
         """Keep the pictures of the newest `keep_days` distinct days; delete the rest."""
         pics = self.pictures(site)
@@ -97,6 +138,7 @@ class Storage:
                     removed.append(p.path)
                 except OSError:
                     pass
+                self._remove_variants(p.path)
         if removed:
             with self._lock:
                 meta = self._meta()

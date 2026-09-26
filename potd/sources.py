@@ -9,7 +9,7 @@ import struct
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .storage import Storage
@@ -84,6 +84,7 @@ class FetchContext:
     bing_market: str = "en-US"
     source_date: str | None = None   # set by a fetcher: the day the source's picture is for
     photo_caption: bool = True       # Photos: write date / place / camera on the picture
+    screen_sizes: list = field(default_factory=list)   # pixel sizes of all monitors
 
 
 # ---------------------------------------------------------------- http helpers
@@ -347,14 +348,19 @@ def fetch_photos(ctx: FetchContext) -> Picture:
     recent = ctx.storage.recent_photos()
     places = ctx.storage.place_cache()
     try:
-        data, local_id, title, credit = ph.random_photo(ctx.width, ctx.height, set(recent),
-                                                        caption=ctx.photo_caption, place_cache=places)
+        sizes = ctx.screen_sizes or [(ctx.width, ctx.height)]
+        data, local_id, title, credit, extra = ph.random_photo(
+            ctx.width, ctx.height, set(recent), caption=ctx.photo_caption,
+            place_cache=places, sizes=sizes)
     except ph.PhotosError as e:
         raise SourceError(str(e), transient=e.transient) from e
     ctx.storage.add_recent_photo(local_id)
     ctx.storage.save_place_cache(places)
     stamp = dt.datetime.now().strftime("%H%M%S")
-    return _store(ctx, site, data, f"photo-{stamp}", title, credit, "photos:" + local_id)
+    pic = _store(ctx, site, data, f"photo-{stamp}", title, credit, "photos:" + local_id)
+    for size, variant in (extra or {}).items():       # a version shaped for each monitor
+        ctx.storage.save_variant(pic.path, size, variant)
+    return pic
 
 
 FETCHERS = {

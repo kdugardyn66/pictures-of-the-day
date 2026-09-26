@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Protocol
 
 from .config import API_KEY_FIELDS, SITES, Settings, State
-from .sources import FetchContext, Picture, SourceError, cached_today, fetch, test_source
+from .photo_caption import best_variant
+from .sources import FetchContext, image_info, Picture, SourceError, cached_today, fetch, test_source
 from .storage import Storage
 
 log = logging.getLogger("potd")
@@ -23,7 +24,7 @@ MAX_SLOTS = 64
 
 class Backend(Protocol):
     def slots(self) -> list[tuple[str, object]]: ...        # [(slot_key, screen), ...]
-    def set_wallpaper(self, screen, path: Path) -> bool: ...
+    def set_wallpaper(self, screen, path: Path, fit: bool = False) -> bool: ...
     def target_size(self) -> tuple[int, int]: ...
 
 
@@ -86,7 +87,12 @@ class Engine:
         s = self.settings
         return FetchContext(self.storage, dt.date.today().isoformat(), w, h,
                             s.nasa_api_key, s.unsplash_access_key, s.bing_market,
-                            photo_caption=s.photo_caption)
+                            photo_caption=s.photo_caption,
+                            screen_sizes=self._screen_sizes())
+
+    def _screen_sizes(self) -> list:
+        fn = getattr(self.backend, "screen_sizes", None)
+        return list(fn()) if fn else []
 
     def run_downloads(self, sites: list[str] | None = None) -> dict:
         """Fetch today's picture from each site. Blocking: call from a worker thread."""
@@ -98,9 +104,12 @@ class Engine:
                 try:
                     results[site] = fetch(site, ctx)
                     log.info("%s: %s", site, results[site].path.name)
-                except Exception as e:           # one bad site must not stop the others
+                except SourceError as e:         # one bad site must not stop the others
                     results[site] = e
                     log.warning("%s failed: %s", site, e)
+                except Exception as e:           # a bug in potd: log it, retry later, don't untick
+                    log.exception("%s failed unexpectedly", site)
+                    results[site] = SourceError(f"unexpected error: {e!r}", transient=True)
             self.prune()
         return results
 
@@ -140,6 +149,8 @@ class Engine:
         if api_key is not None:
             self.settings.set_api_key(site, api_key)
         self.settings.enabled[site] = True
+        self.state.disabled_reasons.pop(site, None)
+        self.save_state()
         self.save_settings()
         self.apply()
 
@@ -151,6 +162,7 @@ class Engine:
         offline = bool(failed) and len(failed) == len(results) and all(results[s][2] for s in failed)
         failed = [s for s in failed if not results[s][2]]
         for s in failed:
+            self.state.disabled_reasons[s] = results[s][1]
             self.settings.enabled[s] = False
         if failed:
             self.save_settings()
@@ -185,6 +197,8 @@ class Engine:
                           if s not in results or s in retry]
         for s in disabled:
             self.settings.enabled[s] = False
+            st.disabled_reasons[s] = str(results[s])
+            log.warning("%s unticked: %s", s, results[s])
         if disabled:
             self.save_settings()
 
@@ -287,7 +301,9 @@ class Engine:
             log.info("apply: nothing to show (no pictures for the enabled sources)")
         for key, screen, path in plan:
             if force or self._applied.get(key) != str(path):
-                ok = self.backend.set_wallpaper(screen, path)
+                fitted = self.is_fitted(path)
+                shown = self.version_for(path, screen) if fitted else Path(path)
+                ok = self.backend.set_wallpaper(screen, shown, fit=fitted)
                 log.info("apply: clone=%s offset=%d slot=%s -> %s%s",
                          "yes" if self.settings.clone_wallpapers else "no", self.state.offset,
                          key, path.name, "" if ok else "  (FAILED)")
@@ -295,6 +311,32 @@ class Engine:
                     self._applied[key] = str(path)
                     changed += 1
         return changed
+
+    def version_for(self, path, screen) -> Path:
+        """The version of a Photos wallpaper made for this screen's shape (no black bars)."""
+        size_fn = getattr(self.backend, "screen_size", None)
+        variants = self.storage.variants(path)
+        if not size_fn or not variants:
+            return Path(path)
+        main = self._main_size(path)
+        available = dict(variants)
+        if main:
+            available[main] = Path(path)
+        best = best_variant(list(available), size_fn(screen))
+        return available.get(best, Path(path))
+
+    def _main_size(self, path):
+        """Pixel size of the main file (read from its header)."""
+        try:
+            with open(path, "rb") as f:
+                info = image_info(f.read(512 * 1024))
+            return (info[0], info[1]) if info else None
+        except OSError:
+            return None
+
+    def is_fitted(self, path) -> bool:
+        """Photos wallpapers are always shown whole; the other sources fill the screen."""
+        return Path(path).parent == self.storage.site_dir("Photos")
 
     def rotate(self, now_ts: float | None = None) -> int:
         self.override = None

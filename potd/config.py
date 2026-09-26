@@ -157,6 +157,7 @@ class State:
     day_pool: list = field(default_factory=list)   # ["Site/file.jpg", ...]
     slots: list = field(default_factory=list)      # known "<display>|<space>" keys, in first-seen order
     retry_sites: list = field(default_factory=list)  # failed temporarily -> retried every refresh
+    disabled_reasons: dict = field(default_factory=dict)  # {site: why potd unticked it}
 
     @classmethod
     def load(cls, path: Path | None = None) -> "State":
@@ -164,6 +165,7 @@ class State:
         st.day_pool = [str(x) for x in (st.day_pool or [])]
         st.slots = [str(x) for x in (st.slots or [])]
         st.retry_sites = [str(x) for x in (st.retry_sites or []) if x in SITES]
+        st.disabled_reasons = {str(k): str(v) for k, v in (st.disabled_reasons or {}).items() if k in SITES}
         return st
 
     def save(self, path: Path | None = None) -> None:

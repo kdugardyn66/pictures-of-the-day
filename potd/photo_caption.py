@@ -33,6 +33,15 @@ def format_place(locality=None, area=None, country=None, name=None) -> str:
     return ", ".join(parts)
 
 
+def coordinate_values(coord) -> tuple[float, float]:
+    """(latitude, longitude) from a CLLocationCoordinate2D, which PyObjC may give as a
+    struct with .latitude/.longitude or as a plain (latitude, longitude) tuple."""
+    if hasattr(coord, "latitude"):
+        return float(coord.latitude), float(coord.longitude)
+    lat, lon = coord[0], coord[1]
+    return float(lat), float(lon)
+
+
 def format_coordinates(lat: float, lon: float) -> str:
     return f"{abs(lat):.4f}° {'N' if lat >= 0 else 'S'}, {abs(lon):.4f}° {'E' if lon >= 0 else 'W'}"
 
@@ -48,6 +57,39 @@ def fill_rect(img_w: float, img_h: float, out_w: float, out_h: float):
     scale = max(out_w / img_w, out_h / img_h)
     w, h = img_w * scale, img_h * scale
     return (out_w - w) / 2, (out_h - h) / 2, w, h
+
+
+def fit_rect(img_w: float, img_h: float, out_w: float, out_h: float):
+    """Where to draw an image so all of it is visible, centred ('aspect fit').
+    Returns (x, y, w, h) in output coordinates."""
+    scale = min(out_w / img_w, out_h / img_h)
+    w, h = img_w * scale, img_h * scale
+    return (out_w - w) / 2, (out_h - h) / 2, w, h
+
+
+def screen_shapes(sizes, max_side: int = 6144) -> list[tuple[int, int]]:
+    """Distinct screen pixel sizes, largest first (each gets its own version of a photo)."""
+    out = []
+    for w, h in sizes:
+        w, h = int(w), int(h)
+        if w <= 0 or h <= 0:
+            continue
+        k = min(1.0, max_side / max(w, h))
+        size = (int(w * k), int(h * k))
+        if size not in out:
+            out.append(size)
+    return sorted(out, key=lambda s: s[0] * s[1], reverse=True)
+
+
+def best_variant(available, screen, tolerance: float = 0.02):
+    """Which rendered size to show on a screen: exact size, else the same shape
+    (aspect ratio within 2 %), largest first; None if no version has that shape."""
+    screen = (int(screen[0]), int(screen[1]))
+    if screen in available:
+        return screen
+    target = screen[0] / screen[1]
+    same = [s for s in available if abs(s[0] / s[1] - target) / target <= tolerance]
+    return max(same, key=lambda s: s[0] * s[1]) if same else None
 
 
 def output_size(img_w: int, img_h: int, screen_w: int, screen_h: int) -> tuple[int, int]:

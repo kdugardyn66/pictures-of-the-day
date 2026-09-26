@@ -29,8 +29,10 @@ class FakeBackend:
     def slots(self):
         return [(k, k) for k in self.keys]
 
-    def set_wallpaper(self, screen, path):
+    def set_wallpaper(self, screen, path, fit=False):
         self.set[screen] = Path(path).name
+        self.fit = getattr(self, "fit", {})
+        self.fit[screen] = fit
         return True
 
     def target_size(self):
@@ -371,12 +373,12 @@ def test_photos_source_random_private_and_no_repeats(env, monkeypatch):
 
     captions = []
 
-    def random_photo(w, h, avoid, caption=True, place_cache=None):
+    def random_photo(w, h, avoid, caption=True, place_cache=None, sizes=None):
         seen_avoid.append(set(avoid))
         captions.append(caption)
         place_cache["50.850,4.350"] = "Brussels, Belgium"
         pick = next(x for x in library if x not in avoid)
-        return png(40, 20), pick, f"Photo {pick}", "Apple iPhone 15 Pro"
+        return png(40, 20), pick, f"Photo {pick}", "Apple iPhone 15 Pro", {}
     fake.PhotosError, fake.random_photo = PhotosError, random_photo
     fake.check = lambda: "3 photos in the library"
     monkeypatch.setitem(sys.modules, "potd.photos", fake)
@@ -438,3 +440,109 @@ def test_liquid_glass_style_adapts_to_the_photo():
     assert g["w"] > 400 and g["h"] > 90                             # padding around the text
     assert 0 < g["radius"] <= g["h"] / 2                            # rounded, never more than a capsule
     assert g["x"] == m["margin_x"] and g["y"] == m["margin_y"]      # bottom-left corner
+
+
+def test_bug_in_a_source_does_not_untick_it_and_reasons_are_kept(env, monkeypatch):
+    e, _, tmp = env
+
+    def fake_fetch(site, ctx):
+        if site == "Photos":
+            raise AttributeError("'NoneType' object has no attribute 'foo'")   # a bug, not the source
+        if site == "Unsplash":
+            raise sources.SourceError("Unsplash rejected the Access Key")
+        raise sources.SourceError("offline", network=True)
+    monkeypatch.setattr(engine_mod, "fetch", fake_fetch)
+    r = e.finish_downloads(e.run_downloads())
+    assert "Photos" in r["retry"] and e.settings.enabled["Photos"] is True
+    assert r["disabled"] == ["Unsplash"]
+    assert e.state.disabled_reasons == {"Unsplash": "Unsplash rejected the Access Key"}
+    assert State.load(tmp / "st.json").disabled_reasons["Unsplash"]      # survives a restart
+    e.save_source("Unsplash", "new-key")                                  # fixed in the ⓘ window
+    assert e.state.disabled_reasons == {}
+
+
+def test_gps_coordinates_as_tuple_or_struct():
+    """macOS may hand the photo's position over as a plain (lat, lon) tuple."""
+    from types import SimpleNamespace
+    from potd.photo_caption import coordinate_values
+    assert coordinate_values((51.0543, 3.7174)) == (51.0543, 3.7174)
+    assert coordinate_values(SimpleNamespace(latitude=51.0543, longitude=3.7174)) == (51.0543, 3.7174)
+
+
+def test_photos_fit_whole_on_screen():
+    from potd.photo_caption import fit_rect
+    x, y, w, h = fit_rect(3024, 4032, 2880, 1800)            # portrait photo on a wide screen
+    assert h == 1800 and w < 2880 and x > 0 and y == 0       # whole photo visible, centred
+    x, y, w, h = fit_rect(6000, 2000, 2880, 1800)            # panorama
+    assert w == 2880 and h < 1800 and y > 0
+
+
+def test_photos_wallpapers_are_set_to_fit(env):
+    e, be, tmp = env
+    photo = e.storage.save_bytes("Photos", "2026-09-26", "p", "png", png(4, 2))
+    bing = e.storage.save_bytes("Bing", "2026-09-26", "b", "png", png(4, 2))
+    e.set_now(photo)
+    assert set(be.fit.values()) == {True}                     # Photos: never cropped by macOS
+    e.set_now(bing)
+    assert set(be.fit.values()) == {False}                    # other sources fill the screen
+
+
+# Kris's setup: MacBook (Retina) + 27" 2560x1440 + 34" 3440x1440
+MACBOOK, QHD, ULTRAWIDE = (3600, 2338), (2560, 1440), (3440, 1440)
+
+
+def test_screen_shapes_and_best_version():
+    from potd.photo_caption import best_variant, screen_shapes
+    assert screen_shapes([QHD, MACBOOK, ULTRAWIDE, QHD]) == [MACBOOK, ULTRAWIDE, QHD]   # largest first
+    available = [MACBOOK, ULTRAWIDE, QHD]
+    assert best_variant(available, QHD) == QHD
+    assert best_variant(available, (1920, 1080)) == QHD            # same 16:9 shape, other size
+    assert best_variant(available, (3840, 1600)) == ULTRAWIDE       # 21:9 -> ultrawide version
+    assert best_variant(available, (1080, 1920)) is None            # portrait monitor: none made
+
+
+def test_each_monitor_gets_its_own_version_of_a_photo(env, monkeypatch):
+    import sys
+    import types
+    e, _, tmp = env
+
+    class Backend(FakeBackend):
+        sizes = {"A|1": MACBOOK, "B|1": QHD, "C|1": ULTRAWIDE}
+
+        def screen_sizes(self):
+            return list(self.sizes.values())
+
+        def screen_size(self, screen):
+            return self.sizes[screen]
+    be = Backend(["A|1", "B|1", "C|1"])
+    e.backend = be
+    rendered = []
+    fake = types.ModuleType("potd.photos")
+
+    class PhotosError(Exception):
+        transient = False
+
+    def random_photo(w, h, avoid, caption=True, place_cache=None, sizes=None):
+        from potd.photo_caption import screen_shapes
+        shapes = screen_shapes(sizes)
+        rendered.extend(shapes)
+        main = png(*shapes[0])
+        return main, "X", "Photo X", "cam", {s: png(*s) for s in shapes[1:]}
+    fake.PhotosError, fake.random_photo = PhotosError, random_photo
+    monkeypatch.setitem(sys.modules, "potd.photos", fake)
+    import potd
+    monkeypatch.setattr(potd, "photos", fake, raising=False)
+
+    pic = sources.fetch("Photos", e._ctx())
+    assert rendered == [MACBOOK, ULTRAWIDE, QHD]                     # one render per monitor shape
+    assert set(e.storage.variants(pic.path)) == {ULTRAWIDE, QHD}
+    assert e.storage.pictures("Photos") == [e.storage.resolve(pic.rel)]   # versions not in rotation
+    e.set_now(pic.path)
+    assert be.set["A|1"] == pic.path.name                            # MacBook: main file
+    assert be.set["B|1"] == f"{pic.path.stem}@2560x1440.jpg"          # 27": its own version
+    assert be.set["C|1"] == f"{pic.path.stem}@3440x1440.jpg"          # 34": its own version
+    # pruning a photo removes its versions too
+    old = e.storage.save_bytes("Photos", "2020-01-01", "old", "png", png(8, 4))
+    e.storage.save_variant(old, QHD, png(4, 2))
+    e.storage.prune("Photos", 1)
+    assert not old.exists() and e.storage.variants(old) == {}
